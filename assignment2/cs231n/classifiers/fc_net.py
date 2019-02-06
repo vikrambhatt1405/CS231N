@@ -185,17 +185,32 @@ class FullyConnectedNet(object):
         self.params["b1"] = np.zeros(hidden_dims[0])
         self.weight_keys.append("W1")
         self.bias_keys.append("b1")
+
+        if ((self.normalization == 'batchnorm') | (self.normalization == 'layernorm')):
+            self.gamma_keys = []
+            self.beta_keys = []
+            self.params["gamma1"] = np.ones(shape=(hidden_dims[0],))
+            self.params["beta1"] = np.zeros(shape=(hidden_dims[0],))
+            self.gamma_keys.append("gamma1")
+            self.beta_keys.append("beta1")
+
         for i in range(2,self.num_layers):
-            #print("W{}".format(i))#,input_dim,total_dims[i-1])
             self.params["W{}".format(i)] = weight_scale*np.random.randn(hidden_dims[i-2],hidden_dims[i-1])
             self.params["b{}".format(i)] = np.zeros(hidden_dims[i-1])
             self.weight_keys.append("W{}".format(i))
             self.bias_keys.append("b{}".format(i))
+            if ((self.normalization == 'batchnorm') | (self.normalization == 'layernorm')):
+                self.params["gamma{}".format(i)] = np.ones(shape=(hidden_dims[i-1],))
+                self.params["beta{}".format(i)] = np.zeros(shape=(hidden_dims[i-1],))
+                self.gamma_keys.append("gamma{}".format(i))
+                self.beta_keys.append("beta{}".format(i))
         self.params["W{}".format(self.num_layers)] = weight_scale*np.random.randn(hidden_dims[-1],num_classes)
         self.params["b{}".format(self.num_layers)] = np.zeros(num_classes)
         self.weight_keys.append("W{}".format(self.num_layers))
         self.bias_keys.append("b{}".format(self.num_layers))
-
+        # for gamma in self.gamma_keys:
+        #     print("{}".format(gamma),self.params[gamma].shape)
+        # print("Weights:{}".format(self.weight_keys))
         ############################################################################
         #                             END OF YOUR CODE                             #
         ############################################################################
@@ -233,7 +248,7 @@ class FullyConnectedNet(object):
         """
         X = X.astype(self.dtype)
         mode = 'test' if y is None else 'train'
-        N,D = X.shape
+        N,D = X.reshape(X.shape[0],-1).shape
         # Set train/test mode for batchnorm params and dropout param since they
         # behave differently during training and testing.
         if self.use_dropout:
@@ -242,6 +257,7 @@ class FullyConnectedNet(object):
             for bn_param in self.bn_params:
                 bn_param['mode'] = mode
         scores = None
+
         ############################################################################
         # TODO: Implement the forward pass for the fully-connected net, computing  #
         # the class scores for X and storing them in the scores variable.          #
@@ -259,8 +275,12 @@ class FullyConnectedNet(object):
             input = X
             for (weight,bias) in zip(self.weight_keys[:-1],self.bias_keys[:-1]):
                 (out_affine_relu,cache_affine_relu) = affine_relu_forward(input,self.params[weight],self.params[bias])
-                forward_pass_cache.append(cache_affine_relu)
-                input = out_affine_relu
+                if(self.use_dropout):
+                    input,cache_dropout = dropout_forward(out_affine_relu, self.dropout_param)
+                    forward_pass_cache.append((cache_affine_relu,cache_dropout))
+                else:
+                    forward_pass_cache.append(cache_affine_relu)
+                    input = out_affine_relu
 
             scores,cache_affine_forward =  affine_forward(input,self.params[self.weight_keys[-1]],
                                         self.params[self.bias_keys[-1]])
@@ -268,15 +288,42 @@ class FullyConnectedNet(object):
         if self.normalization == 'batchnorm':
             forward_pass_cache=[]
             input = X
-            gamma = np.ones(shape=(D,))
-            beta = np.ones(shape=(D,))
-            input = X
-            for index,(weight,bias) in enumerate(zip(self.weight_keys[:-1],self.bias_keys[:-1])):
+            for index,(weight,bias,gamma,beta) in enumerate(zip(self.weight_keys[:-1],
+                                                    self.bias_keys[:-1],
+                                                    self.gamma_keys,
+                                                    self.beta_keys)):
                 (out,cache)=affine_bn_relu_forward(input,self.params[weight],
-                                                   self.params[bias],gamma,
-                                                   beta,self.bn_params[index])
-                forward_pass_cache.append(cache)
-                input = out
+                                        self.params[bias],self.params[gamma],
+                                        self.params[beta],self.bn_params[index])
+                if self.use_dropout:
+                    (input,cache_dropout) = dropout_forward(out,self.dropout_param)
+                    forward_pass_cache.append((cache,cache_dropout))
+                else:
+                    forward_pass_cache.append(cache)
+                    input = out
+            scores,cache_affine_forward =  affine_forward(input,
+                                            self.params[self.weight_keys[-1]],
+                                            self.params[self.bias_keys[-1]])
+
+
+        if self.normalization == 'layernorm':
+            ln_param= dict({'eps':1e-5})
+            forward_pass_cache=[]
+            input = X
+            for (weight,bias,gamma,beta) in zip(self.weight_keys[:-1],
+                                                    self.bias_keys[:-1],
+                                                    self.gamma_keys,
+                                                    self.beta_keys):
+                (out,cache)=affine_ln_relu_forward(input,self.params[weight],
+                                        self.params[bias],self.params[gamma],
+                                        self.params[beta],ln_param)
+                if self.use_dropout:
+                    (input,cache_dropout) = dropout_forward(out,self.dropout_param)
+                    forward_pass_cache.append((cache,cache_dropout))
+                else:
+                    forward_pass_cache.append(cache)
+                    input = out
+
             scores,cache_affine_forward =  affine_forward(input,
                                             self.params[self.weight_keys[-1]],
                                             self.params[self.bias_keys[-1]])
@@ -311,7 +358,56 @@ class FullyConnectedNet(object):
             loss +=  0.5*self.reg*reg_loss
             (dx,grads[self.weight_keys[-1]],grads[self.bias_keys[-1]])=affine_backward(dout,cache_affine_forward)
             for weight,bias,forward_cache in zip(self.weight_keys[::-1][1:],self.bias_keys[::-1][1:],forward_pass_cache[::-1]):
-                dx,grads[weight],grads[bias] = affine_relu_backward(dx,forward_cache)
+                if self.use_dropout:
+                    (cache_affine_relu,cache_dropout) = forward_cache
+                    dx = dropout_backward(dx,cache_dropout)
+                    dx,grads[weight],grads[bias] = affine_relu_backward(dx,cache_affine_relu)
+                else:
+                    dx,grads[weight],grads[bias] = affine_relu_backward(dx,forward_cache)
+            for weight in self.weight_keys:
+                grads[weight] += self.reg*self.params[weight]
+
+        if self.normalization == 'batchnorm':
+            loss,dout = softmax_loss(scores,y)
+            reg_loss = 0
+            for weight in self.weight_keys:
+                reg_loss += np.sum(self.params[weight]**2)
+            loss += 0.5*self.reg*reg_loss
+            (dx,grads[self.weight_keys[-1]],grads[self.bias_keys[-1]])=affine_backward(dout,cache_affine_forward)
+            for weight,bias,forward_cache,gamma,beta in zip(self.weight_keys[::-1][1:],
+                                                 self.bias_keys[::-1][1:],
+                                                 forward_pass_cache[::-1],
+                                                 self.gamma_keys[::-1],
+                                                 self.beta_keys[::-1]):
+                if self.use_dropout:
+                    (cache,cache_dropout) =  forward_cache
+                    dx = dropout_backward(dx,cache_dropout)
+                    dx,grads[weight],grads[bias],grads[gamma],grads[beta] = affine_bn_relu_backward(dx,cache)
+                else:
+                    dx,grads[weight],grads[bias],grads[gamma],grads[beta] = affine_bn_relu_backward(dx,forward_cache)
+
+            for weight in self.weight_keys:
+                grads[weight] += self.reg*self.params[weight]
+
+        if self.normalization == 'layernorm':
+            loss,dout = softmax_loss(scores,y)
+            reg_loss = 0
+            for weight in self.weight_keys:
+                reg_loss += np.sum(self.params[weight]**2)
+            loss += 0.5*self.reg*reg_loss
+            (dx,grads[self.weight_keys[-1]],grads[self.bias_keys[-1]])=affine_backward(dout,cache_affine_forward)
+            for weight,bias,forward_cache,gamma,beta in zip(self.weight_keys[::-1][1:],
+                                                 self.bias_keys[::-1][1:],
+                                                 forward_pass_cache[::-1],
+                                                 self.gamma_keys[::-1],
+                                                 self.beta_keys[::-1]):
+                if self.use_dropout:
+                    (cache,cache_dropout) =  forward_cache
+                    dx = dropout_backward(dx,cache_dropout)
+                    dx,grads[weight],grads[bias],grads[gamma],grads[beta] = affine_ln_relu_backward(dx,cache)
+                else:
+                    dx,grads[weight],grads[bias],grads[gamma],grads[beta] = affine_ln_relu_backward(dx,forward_cache)
+
             for weight in self.weight_keys:
                 grads[weight] += self.reg*self.params[weight]
         ############################################################################
@@ -332,5 +428,21 @@ def affine_bn_relu_backward(dout,cache):
     cache_affine,cache_bn,cache_relu = cache
     dx = relu_backward(dout, cache_relu)
     dx,dgamma,dbeta = batchnorm_backward(dx,cache_bn)
+    dx,dw,db = affine_backward(dx,cache_affine)
+    return dx,dw,db,dgamma,dbeta
+
+
+def affine_ln_relu_forward(x,w,b,gamma,beta,ln_param):
+    (out,cache_affine) = affine_forward(x,w,b)
+    (out,cache_ln) =  layernorm_forward(out,gamma,beta,ln_param)
+    (out,cache_relu) =  relu_forward(out)
+    cache = (cache_affine,cache_ln,cache_relu)
+    return out,cache
+
+
+def affine_ln_relu_backward(dout,cache):
+    cache_affine,cache_ln,cache_relu = cache
+    dx = relu_backward(dout, cache_relu)
+    dx,dgamma,dbeta = layernorm_backward(dx,cache_ln)
     dx,dw,db = affine_backward(dx,cache_affine)
     return dx,dw,db,dgamma,dbeta
