@@ -1,7 +1,6 @@
 from builtins import range
 import numpy as np
-
-
+from numpy.lib.stride_tricks import as_strided
 def affine_forward(x, w, b):
     """
     Computes the forward pass for an affine (fully-connected) layer.
@@ -491,8 +490,27 @@ def conv_forward_naive(x, w, b, conv_param):
     # TODO: Implement the convolutional forward pass.                         #
     # Hint: you can use the function np.pad for padding.                      #
     ###########################################################################
-    
-    ###########################################################################
+    (N,C,H,W) = x.shape
+    (F,C,HH,WW) = w.shape
+    pad = conv_param['pad']
+    stride = conv_param['stride']
+    hh = 1 + (H + 2 * pad - HH) // stride
+    ww = 1 + (W + 2 * pad - WW) // stride
+
+    out = np.zeros(shape=(N,F,hh,ww),dtype=np.float32)
+    x_padded = np.pad(x,pad_width=((0,0),(0,0),(pad,pad),(pad,pad)),mode='constant')
+    # print("x_padded shape:", x_padded.shape)
+    # print("output shape:", out.shape)
+    for i in range(N):
+        for j in range(F):
+            for hindex in range(hh):
+                for windex in range(ww):
+                    sub_matrix = x_padded[i,:,stride*hindex:stride*hindex+HH,stride*windex:stride*windex+WW]
+                    # sub_matrix =  as_strided(x_padded[i,:,hindex:,windex:],w[j].shape,x_padded[i].strides)
+                    assert sub_matrix.shape == w[j].shape, "invalid convolutional shapes,sub_matrix shape {},expected {}".format(sub_matrix.shape,w[j].shape)
+                    out[i,j,hindex,windex] = np.sum(sub_matrix*w[j]) + b[j]
+
+    assert out.shape == (N,F,hh,ww)
     #                             END OF YOUR CODE                            #
     ###########################################################################
     cache = (x, w, b, conv_param)
@@ -516,7 +534,30 @@ def conv_backward_naive(dout, cache):
     ###########################################################################
     # TODO: Implement the convolutional backward pass.                        #
     ###########################################################################
-    pass
+    (x,w,b,conv_param) = cache
+    (N,C,H,W) = x.shape
+    (F,C,HH,WW) = w.shape
+    pad = conv_param['pad']
+    stride = conv_param['stride']
+    hh = 1 + (H + 2 * pad - HH) // stride
+    ww = 1 + (W + 2 * pad - WW) // stride
+    x_padded = np.pad(x,pad_width=((0,0),(0,0),(pad,pad),(pad,pad)),mode='constant')
+    dx_padded = np.zeros_like(x_padded)
+    dw = np.zeros_like(w)
+    dx = np.zeros_like(x)
+    db = np.zeros_like(b)
+
+    for n in range(N):
+        for f in range(F):
+            db[f] += dout[n, f].sum()
+            for j in range(0, hh):
+                for i in range(0, ww):
+                    dw[f] += x_padded[n, :, j * stride:j * stride + HH, i * stride:i * stride + WW] * dout[n, f, j, i]
+                    dx_padded[n, :, j * stride:j * stride + HH, i * stride:i * stride + WW] += w[f] * dout[n, f, j, i]
+
+    dx = dx_padded[:, :, pad:pad+H, pad:pad+W]
+
+
     ###########################################################################
     #                             END OF YOUR CODE                            #
     ###########################################################################
@@ -542,11 +583,21 @@ def max_pool_forward_naive(x, pool_param):
       W' = 1 + (W - pool_width) / stride
     - cache: (x, pool_param)
     """
-    out = None
+    N,C,H,W = x.shape
+    pool_height = pool_param['pool_height']
+    pool_width = pool_param['pool_width']
+    stride = pool_param['stride']
+    HH = 1 + (H-pool_height)//stride
+    WW = 1 + (W-pool_width)//stride
+    out = np.zeros(shape=(N,C,HH,WW))
     ###########################################################################
     # TODO: Implement the max-pooling forward pass                            #
     ###########################################################################
-    pass
+    for i in range(N):
+        for j in range(C):
+            for hh in range(HH):
+                for ww in range(WW):
+                    out[i,j,hh,ww] = np.max(x[i,j,stride*hh:stride*hh+HH,stride*ww:stride*ww+WW])
     ###########################################################################
     #                             END OF YOUR CODE                            #
     ###########################################################################
@@ -699,7 +750,7 @@ def spatial_groupnorm_backward(dout, cache):
     # TODO: Implement the backward pass for spatial group normalization.      #
     # This will be extremely similar to the layer norm implementation.        #
     ###########################################################################
-    pass
+
     ###########################################################################
     #                             END OF YOUR CODE                            #
     ###########################################################################
